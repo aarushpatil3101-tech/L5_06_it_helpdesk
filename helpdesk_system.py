@@ -1,65 +1,119 @@
+"""IT helpdesk ticket allocator: raise, assign, annotate, close and save tickets."""
 import json
 import os
 import re
 import subprocess  # nosec B404 - needed for ping; called without a shell
+from dataclasses import dataclass, field
 from datetime import datetime
 
-# Global state
-tickets = {}
-ticket_counter = 100
+MIN_URGENCY = 1
+MAX_URGENCY = 5
+HIGH_PRIORITY = 4
+
 # Secret comes from the environment, never from source control
 ADMIN_PASSWORD = os.environ.get("HELPDESK_ADMIN_PASSWORD")
 HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 
-def raise_ticket(user, issue_type, urgency="3", audit_trail=[]):
-    global ticket_counter
-    ticket_counter += 1
-    tickets[ticket_counter] = {"user": user, "issue": issue_type, "priority": int(urgency), "tech": None, "notes": []}
-    audit_trail.append("%s raised #%d at %s" % (user, ticket_counter, datetime.now()))
-    return ticket_counter
+@dataclass
+class TicketStore:
+    """Holds all tickets plus the running ticket counter (replaces globals)."""
+
+    tickets: dict = field(default_factory=dict)
+    counter: int = 100
+
+STORE = TicketStore()
+
+def parse_urgency(value):
+    """Convert user input to an int urgency in 1-5, else raise ValueError."""
+    try:
+        urgency = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"urgency must be a whole number, got {value!r}") from None
+    if not MIN_URGENCY <= urgency <= MAX_URGENCY:
+        raise ValueError(
+            f"urgency must be {MIN_URGENCY}-{MAX_URGENCY}, got {urgency}"
+        )
+    return urgency
+
+def raise_ticket(user, issue_type, urgency="3", audit_trail=None):
+    """Create a ticket, log it to audit_trail (if given) and return its id."""
+    priority = parse_urgency(urgency)  # validate before touching any state
+    if audit_trail is None:
+        audit_trail = []
+    STORE.counter += 1
+    ticket_id = STORE.counter
+    STORE.tickets[ticket_id] = {
+        "user": user,
+        "issue": issue_type,
+        "priority": priority,
+        "tech": None,
+        "notes": [],
+    }
+    audit_trail.append(f"{user} raised #{ticket_id} at {datetime.now()}")
+    return ticket_id
 
 def assign_ticket(ticket_id, technician):
-    tickets[ticket_id]["tech"] = technician
+    """Assign a technician to an existing ticket."""
+    STORE.tickets[ticket_id]["tech"] = technician
 
 def add_note(ticket_id, note):
+    """Append a note to a ticket. Return False if the ticket does not exist."""
     try:
-        tickets[ticket_id]["notes"].append(note)
+        STORE.tickets[ticket_id]["notes"].append(note)
     except KeyError:
-        print("add_note: no such ticket #%s" % ticket_id)
+        print(f"add_note: no such ticket #{ticket_id}")
+        return False
+    return True
 
 def close_ticket(ticket_id, password):
-    if ADMIN_PASSWORD and password == ADMIN_PASSWORD:
-        del tickets[ticket_id]
+    """Delete a ticket if the admin password matches. Return True on success."""
+    if not ADMIN_PASSWORD or password != ADMIN_PASSWORD:
+        print("close_ticket: not authorised")
+        return False
+    if ticket_id not in STORE.tickets:
+        print(f"close_ticket: no such ticket #{ticket_id}")
+        return False
+    del STORE.tickets[ticket_id]
+    return True
 
-def unresolvedHighPriority():
-    result = []
-    for t in tickets:
-        if tickets[t]["priority"] >= 4 and tickets[t]["tech"] == None:
-            result.append(t)
-    return result
+def unresolved_high_priority():
+    """Return ids of unassigned tickets with priority >= HIGH_PRIORITY."""
+    return [
+        ticket_id
+        for ticket_id, ticket in STORE.tickets.items()
+        if ticket["priority"] >= HIGH_PRIORITY and ticket["tech"] is None
+    ]
 
 def ping_user_machine(hostname):
+    """Ping a host once. Raises ValueError for a malformed hostname."""
     if not HOSTNAME_RE.match(hostname):
-        raise ValueError("invalid hostname: %r" % hostname)
+        raise ValueError(f"invalid hostname: {hostname!r}")
     # argument list + no shell => hostname can never be parsed as a command
     return subprocess.call(["ping", "-c", "1", hostname])  # nosec B603 B607
 
 def save_tickets(file="tickets.json"):
-    f = open(file, "w")
-    f.write(json.dumps(tickets))
-    f.close()
+    """Write all tickets to a JSON file."""
+    with open(file, "w", encoding="utf-8") as handle:
+        json.dump(STORE.tickets, handle)
 
 def main():
-    t1 = raise_ticket("anil", "printer", "5")
-    t2 = raise_ticket("meera", "wifi", "4")
-    t3 = raise_ticket("joe", "vpn", "-7")
-    assign_ticket(t1, "Tech-Kiran")
+    """Demo run of the helpdesk workflow."""
+    first = raise_ticket("anil", "printer", "5")
+    raise_ticket("meera", "wifi", "4")
+    third = raise_ticket("joe", "vpn", "2")
+    assign_ticket(first, "Tech-Kiran")
     add_note(999, "Called user")
-    print("Unassigned high priority:", unresolvedHighPriority())
-    level = input("Urgency for a new laptop ticket (1-5, Enter for 3): ") or "3"
-    raise_ticket("sana", "laptop", level)
-    close_ticket(t3, os.environ.get("HELPDESK_ADMIN_PASSWORD", ""))
+    print("Unassigned high priority:", unresolved_high_priority())
+    while True:
+        level = input("Urgency for a new laptop ticket (1-5, Enter for 3): ") or "3"
+        try:
+            raise_ticket("sana", "laptop", level)
+            break
+        except ValueError as err:
+            print("Invalid input:", err)
+    close_ticket(third, os.environ.get("HELPDESK_ADMIN_PASSWORD", ""))
     save_tickets()
-    print("Open tickets:", list(tickets.keys()))
+    print("Open tickets:", list(STORE.tickets.keys()))
 
-main()
+if __name__ == "__main__":
+    main()
