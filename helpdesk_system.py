@@ -1,4 +1,4 @@
-"""IT helpdesk ticket allocator: raise, assign, annotate, close and save tickets."""
+"""IT helpdesk ticket allocator: raise, assign, annotate, close, save."""
 import json
 import os
 import re
@@ -14,6 +14,7 @@ HIGH_PRIORITY = 4
 ADMIN_PASSWORD = os.environ.get("HELPDESK_ADMIN_PASSWORD")
 HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 
+
 @dataclass
 class TicketStore:
     """Holds all tickets plus the running ticket counter (replaces globals)."""
@@ -21,19 +22,24 @@ class TicketStore:
     tickets: dict = field(default_factory=dict)
     counter: int = 100
 
+
 STORE = TicketStore()
+
 
 def parse_urgency(value):
     """Convert user input to an int urgency in 1-5, else raise ValueError."""
     try:
         urgency = int(value)
     except (TypeError, ValueError):
-        raise ValueError(f"urgency must be a whole number, got {value!r}") from None
+        raise ValueError(
+            f"urgency must be a whole number, got {value!r}"
+        ) from None
     if not MIN_URGENCY <= urgency <= MAX_URGENCY:
         raise ValueError(
             f"urgency must be {MIN_URGENCY}-{MAX_URGENCY}, got {urgency}"
         )
     return urgency
+
 
 def raise_ticket(user, issue_type, urgency="3", audit_trail=None):
     """Create a ticket, log it to audit_trail (if given) and return its id."""
@@ -52,9 +58,11 @@ def raise_ticket(user, issue_type, urgency="3", audit_trail=None):
     audit_trail.append(f"{user} raised #{ticket_id} at {datetime.now()}")
     return ticket_id
 
+
 def assign_ticket(ticket_id, technician):
     """Assign a technician to an existing ticket."""
     STORE.tickets[ticket_id]["tech"] = technician
+
 
 def add_note(ticket_id, note):
     """Append a note to a ticket. Return False if the ticket does not exist."""
@@ -65,8 +73,9 @@ def add_note(ticket_id, note):
         return False
     return True
 
+
 def close_ticket(ticket_id, password):
-    """Delete a ticket if the admin password matches. Return True on success."""
+    """Delete a ticket if the admin password matches; True on success."""
     if not ADMIN_PASSWORD or password != ADMIN_PASSWORD:
         print("close_ticket: not authorised")
         return False
@@ -76,6 +85,7 @@ def close_ticket(ticket_id, password):
     del STORE.tickets[ticket_id]
     return True
 
+
 def unresolved_high_priority():
     """Return ids of unassigned tickets with priority >= HIGH_PRIORITY."""
     return [
@@ -84,6 +94,7 @@ def unresolved_high_priority():
         if ticket["priority"] >= HIGH_PRIORITY and ticket["tech"] is None
     ]
 
+
 def ping_user_machine(hostname):
     """Ping a host once. Raises ValueError for a malformed hostname."""
     if not HOSTNAME_RE.match(hostname):
@@ -91,10 +102,12 @@ def ping_user_machine(hostname):
     # argument list + no shell => hostname can never be parsed as a command
     return subprocess.call(["ping", "-c", "1", hostname])  # nosec B603 B607
 
+
 def save_tickets(file="tickets.json"):
     """Write all tickets to a JSON file."""
     with open(file, "w", encoding="utf-8") as handle:
         json.dump(STORE.tickets, handle)
+
 
 def main():
     """Demo run of the helpdesk workflow."""
@@ -105,7 +118,7 @@ def main():
     add_note(999, "Called user")
     print("Unassigned high priority:", unresolved_high_priority())
     while True:
-        level = input("Urgency for a new laptop ticket (1-5, Enter for 3): ") or "3"
+        level = input("Urgency for new laptop ticket (1-5, Enter=3): ") or "3"
         try:
             raise_ticket("sana", "laptop", level)
             break
@@ -114,6 +127,7 @@ def main():
     close_ticket(third, os.environ.get("HELPDESK_ADMIN_PASSWORD", ""))
     save_tickets()
     print("Open tickets:", list(STORE.tickets.keys()))
+
 
 if __name__ == "__main__":
     main()
